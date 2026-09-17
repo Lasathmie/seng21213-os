@@ -1,0 +1,12 @@
+# Build artifacts
+build/
+
+# OS image
+seng21213-os.img
+
+# Compiled binaries
+*.bin
+
+# Windows metadata
+*.Zone.Identifier
+*:Zone.Identifier
