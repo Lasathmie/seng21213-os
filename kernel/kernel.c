@@ -24,6 +24,15 @@
 #include "vga.h"
 #include "keyboard.h"
 #include "../include/types.h"
+#include "idt.h"
+#include "pic.h"
+#include "pit.h"
+#include "process.h"
+#include "scheduler.h"
+#include "thread.h"
+#include "mutex.h"
+#include "pmm.h"
+#include "fs.h"
 
 /* ---------------------------------------------------------------------------
  * Forward declarations of shell commands
@@ -33,6 +42,16 @@ static void cmd_clear(void);
 static void cmd_about(void);
 static void cmd_echo(const char *args);
 static void cmd_mem(void);
+static void race_thread_a(void);
+static void race_thread_b(void);
+static void racem_thread_a(void);
+static void racem_thread_b(void);
+
+/* Stage 2: race condition demo state */
+static volatile int myglobal  = 0;
+static volatile int race_done = 0;
+static mutex_t       race_mutex;
+#define RACE_ITERS 100000
 
 /* ---------------------------------------------------------------------------
  * Utility: minimal string helpers (no libc in a freestanding kernel!)
@@ -119,10 +138,13 @@ static void cmd_help(void) {
     vga_puts_color("\n  Milestones (to implement):\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts("  ps      – [L09] List processes\n");
     vga_puts("  kill    – [L09] Terminate a process\n");
-    vga_puts("  threads – [L10] List kernel threads\n");
-    vga_puts("  free    – [L11] Show free memory\n");
+    vga_puts("  race    – [L10] Unsynchronised myglobal++ race demo\n");
+    vga_puts("  racem   – [L10] Same race, protected by a mutex\n");
+    vga_puts("  meminfo – [L11] Show free/used physical memory\n");
     vga_puts("  ls      – [L12] List files\n");
     vga_puts("  cat     – [L12] Print file contents\n\n");
+    vga_puts("  write   – [L12] Write text to a file\n");
+    vga_puts("  rm      – [L12] Remove a file\n");
 }
 
 static void cmd_clear(void) {
@@ -165,6 +187,13 @@ static void cmd_mem(void) {
 static char  shell_buf[256];
 static char  prompt[] = "\n  ksh> ";
 
+/* Stage 4 filesystem shell commands */
+static void cmd_fs_ls(void);
+static void cmd_fs_touch(const char *name);
+static void cmd_fs_cat(const char *name);
+static void cmd_fs_write(const char *args);
+static void cmd_fs_rm(const char *name);
+
 static void shell_run(void) {
     vga_puts_color("\n  Kernel Shell ready. Type 'help' for commands.\n",
                    VGA_LIGHT_GREEN, VGA_BLACK);
@@ -188,18 +217,155 @@ static void shell_run(void) {
             continue;
         }
 
-        /* Milestone stubs */
-        if (k_strcmp(cmd, "ps")      == 0 ||
-            k_strcmp(cmd, "kill")    == 0 ||
-            k_strcmp(cmd, "threads") == 0 ||
-            k_strcmp(cmd, "free")    == 0 ||
-            k_strcmp(cmd, "ls")      == 0 ||
-            k_strcmp(cmd, "cat")     == 0) {
-            vga_puts_color("  [TODO] This command is not yet implemented.\n",
-                           VGA_YELLOW, VGA_BLACK);
-            vga_puts("  Implement it as part of your lecture assignment.\n");
+                /* Stage 1: ps — list process table */
+        if (k_strcmp(cmd, "ps") == 0) {
+            vga_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
+            vga_puts("  PID  STATE       NAME\n");
+            vga_puts("  ---  ----------  --------\n");
+            vga_set_color(VGA_WHITE, VGA_BLACK);
+            const char *state_names[] = {
+                "FREE", "READY", "RUNNING", "BLOCKED", "TERMINATED"
+            };
+            for (uint32_t i = 0; i < MAX_PROCESSES; i++) {
+                if (process_table[i].state != PROCESS_FREE) {
+                    vga_printf("  %d    %-10s  %s\n",
+                        process_table[i].pid,
+                        state_names[process_table[i].state],
+                        process_table[i].name);
+                }
+            }
             continue;
         }
+
+        /* Stage 1: kill <pid> — terminate a process */
+        if (k_strncmp(cmd, "kill ", 5) == 0) {
+            const char *arg = cmd + 5;
+            uint32_t pid = 0;
+            while (*arg >= '0' && *arg <= '9') {
+                pid = pid * 10 + (uint32_t)(*arg - '0');
+                arg++;
+            }
+            if (pid == 0) {
+                vga_set_color(VGA_LIGHT_RED, VGA_BLACK);
+                vga_puts("  Cannot kill kernel process (PID 0)\n");
+            } else if (pid >= MAX_PROCESSES ||
+                       process_table[pid].state == PROCESS_FREE) {
+                vga_set_color(VGA_LIGHT_RED, VGA_BLACK);
+                vga_puts("  No such process\n");
+            } else {
+                process_terminate(pid);
+                vga_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+                vga_printf("  Process %d terminated\n", pid);
+            }
+            vga_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+            continue;
+        }
+
+        /* Stage 2: race — unsynchronised myglobal++ race condition demo */
+        if (k_strcmp(cmd, "race") == 0) {
+            myglobal  = 0;
+            race_done = 0;
+            thread_create("race_a", race_thread_a);
+            thread_create("race_b", race_thread_b);
+            vga_set_color(VGA_YELLOW, VGA_BLACK);
+            vga_puts("  Started race_a/race_b — no mutex yet.\n");
+            vga_puts("  Expected final myglobal = 200000. Run 'ps' to watch,\n");
+            vga_puts("  or wait for both '... done' lines to print.\n");
+            vga_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+            continue;
+        }
+
+        /* Stage 2: racem — same race, protected by a mutex this time */
+        if (k_strcmp(cmd, "racem") == 0) {
+            myglobal  = 0;
+            race_done = 0;
+            mutex_init(&race_mutex);
+            thread_create("racem_a", racem_thread_a);
+            thread_create("racem_b", racem_thread_b);
+            vga_set_color(VGA_YELLOW, VGA_BLACK);
+            vga_puts("  Started racem_a/racem_b — protected by a mutex.\n");
+            vga_puts("  Expect exactly myglobal = 200000, every single run.\n");
+            vga_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+            continue;
+        }
+
+        /* Stage 3: meminfo — physical frame allocator usage */
+        if (k_strcmp(cmd, "meminfo") == 0) {
+            uint32_t total = pmm_total_frames();
+            uint32_t freef  = pmm_free_frames();
+            uint32_t used  = total - freef;
+            vga_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
+            vga_printf("  Free:  %u KB\n", freef * 4);
+            vga_printf("  Used:  %u KB\n", used * 4);
+            vga_printf("  Total: %u KB\n", total * 4);
+            vga_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+            continue;
+        }
+
+        /* Stage 4: RAM-disk filesystem */
+
+if (k_strcmp(cmd, "ls") == 0) {
+
+    cmd_fs_ls();
+
+    continue;
+}
+
+
+if (k_strncmp(cmd, "touch ", 6) == 0) {
+
+    cmd_fs_touch(
+        k_ltrim(cmd + 6)
+    );
+
+    continue;
+}
+
+
+if (k_strncmp(cmd, "cat ", 4) == 0) {
+
+    cmd_fs_cat(
+        k_ltrim(cmd + 4)
+    );
+
+    continue;
+}
+
+
+if (k_strncmp(cmd, "write ", 6) == 0) {
+
+    cmd_fs_write(
+        k_ltrim(cmd + 6)
+    );
+
+    continue;
+}
+
+
+if (k_strncmp(cmd, "rm ", 3) == 0) {
+
+    cmd_fs_rm(
+        k_ltrim(cmd + 3)
+    );
+
+    continue;
+}
+
+
+/*
+ * Alias:
+ *
+ * unlink filename
+ */
+
+if (k_strncmp(cmd, "unlink ", 7) == 0) {
+
+    cmd_fs_rm(
+        k_ltrim(cmd + 7)
+    );
+
+    continue;
+}
 
         vga_puts_color("  Unknown command: ", VGA_LIGHT_RED, VGA_BLACK);
         vga_puts(cmd);
@@ -207,13 +373,450 @@ static void shell_run(void) {
     }
 }
 
+
+
+
+/* ---------------------------------------------------------------------------
+ * Stage 4 shell helpers
+ * --------------------------------------------------------------------------*/
+
+
+static void cmd_fs_ls(void)
+{
+    fs_list();
+}
+
+
+/* ---------------------------------------------------------------------------
+ * touch
+ * --------------------------------------------------------------------------*/
+
+static void cmd_fs_touch(const char *name)
+{
+    if (!name || !name[0]) {
+
+        vga_puts(
+            "  Usage: touch <name>\n"
+        );
+
+        return;
+    }
+
+
+    int32_t r =
+        fs_create(name);
+
+
+    if (r == -2) {
+
+        vga_puts_color(
+            "  File already exists.\n",
+            VGA_YELLOW,
+            VGA_BLACK
+        );
+
+    } else if (r < 0) {
+
+        vga_puts_color(
+            "  Could not create file.\n",
+            VGA_LIGHT_RED,
+            VGA_BLACK
+        );
+
+    } else {
+
+        vga_puts_color(
+            "  File created.\n",
+            VGA_LIGHT_GREEN,
+            VGA_BLACK
+        );
+    }
+}
+
+
+/* ---------------------------------------------------------------------------
+ * cat
+ * --------------------------------------------------------------------------*/
+
+static void cmd_fs_cat(const char *name)
+{
+    char buf[256];
+
+
+    if (!name || !name[0]) {
+
+        vga_puts(
+            "  Usage: cat <name>\n"
+        );
+
+        return;
+    }
+
+
+    int32_t fd =
+        fs_open(name);
+
+
+    if (fd < 0) {
+
+        vga_puts_color(
+            "  File not found.\n",
+            VGA_LIGHT_RED,
+            VGA_BLACK
+        );
+
+        return;
+    }
+
+
+    int32_t n;
+
+
+    vga_puts("  ");
+
+
+    while (
+        (n = fs_read(
+            fd,
+            buf,
+            sizeof(buf) - 1
+        )) > 0
+    ) {
+
+        buf[n] = '\0';
+
+        vga_puts(buf);
+    }
+
+
+    vga_puts("\n");
+
+
+    fs_close(fd);
+}
+
+
+/* ---------------------------------------------------------------------------
+ * write
+ *
+ * Usage:
+ *
+ *     write filename some text
+ *
+ * The shell command replaces the old file contents.
+ * --------------------------------------------------------------------------*/
+
+static void cmd_fs_write(const char *args)
+{
+    char name[FS_MAX_NAME];
+
+    const char *p =
+        args;
+
+    uint32_t n = 0;
+
+
+    if (!args || !args[0]) {
+
+        vga_puts(
+            "  Usage: write <name> <text>\n"
+        );
+
+        return;
+    }
+
+
+    /*
+     * Skip spaces.
+     */
+
+    while (*p == ' ') {
+        p++;
+    }
+
+
+    /*
+     * Read filename.
+     */
+
+    while (
+        *p &&
+        *p != ' ' &&
+        n + 1 < sizeof(name)
+    ) {
+
+        name[n++] =
+            *p++;
+    }
+
+
+    name[n] =
+        '\0';
+
+
+    /*
+     * Skip spaces between filename
+     * and file contents.
+     */
+
+    while (*p == ' ') {
+        p++;
+    }
+
+
+    if (!name[0] || !*p) {
+
+        vga_puts(
+            "  Usage: write <name> <text>\n"
+        );
+
+        return;
+    }
+
+
+    /*
+     * If file already exists, remove it.
+     *
+     * This makes the shell command behave
+     * like "replace file contents".
+     */
+
+    int32_t testfd =
+        fs_open(name);
+
+
+    if (testfd >= 0) {
+
+        fs_close(testfd);
+
+        fs_unlink(name);
+    }
+
+
+    /*
+     * Create new file.
+     */
+
+    if (fs_create(name) < 0) {
+
+        vga_puts_color(
+            "  Could not create file.\n",
+            VGA_LIGHT_RED,
+            VGA_BLACK
+        );
+
+        return;
+    }
+
+
+    /*
+     * Open it.
+     */
+
+    int32_t fd =
+        fs_open(name);
+
+
+    if (fd < 0) {
+
+        vga_puts_color(
+            "  Could not open file.\n",
+            VGA_LIGHT_RED,
+            VGA_BLACK
+        );
+
+        return;
+    }
+
+
+    /*
+     * Write contents.
+     */
+
+    int32_t written =
+        fs_write(
+            fd,
+            p,
+            k_strlen(p)
+        );
+
+
+    fs_close(fd);
+
+
+    if (written < 0) {
+
+        vga_puts_color(
+            "  Write failed.\n",
+            VGA_LIGHT_RED,
+            VGA_BLACK
+        );
+
+    } else {
+
+        vga_printf(
+            "  Wrote %d bytes.\n",
+            written
+        );
+    }
+}
+
+
+/* ---------------------------------------------------------------------------
+ * rm / unlink
+ * --------------------------------------------------------------------------*/
+
+static void cmd_fs_rm(const char *name)
+{
+    if (!name || !name[0]) {
+
+        vga_puts(
+            "  Usage: rm <name>\n"
+        );
+
+        return;
+    }
+
+
+    int32_t r =
+        fs_unlink(name);
+
+
+    if (r == 0) {
+
+        vga_puts_color(
+            "  File removed.\n",
+            VGA_LIGHT_GREEN,
+            VGA_BLACK
+        );
+
+    } else {
+
+        vga_puts_color(
+            "  File not found or still open.\n",
+            VGA_LIGHT_RED,
+            VGA_BLACK
+        );
+    }
+}
+
+
+
 /* ---------------------------------------------------------------------------
  * Kernel entry point – called from kernel_entry.asm
  * --------------------------------------------------------------------------*/
+/* Demo processes — visible proof that scheduling works */
+static void task_a(void)
+{
+    for (int i = 0; i < 5; i++) {
+        vga_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
+        vga_puts("[A] ");
+        for (volatile uint32_t j = 0; j < 2000000; j++);
+    }
+    /* Done — terminate self */
+    process_terminate(1);
+    /* Spin until scheduler switches us away permanently */
+    while (1) { __asm__ volatile("hlt"); }
+}
+
+static void task_b(void)
+{
+    for (int i = 0; i < 5; i++) {
+        vga_set_color(VGA_LIGHT_MAGENTA, VGA_BLACK);
+        vga_puts("[B] ");
+        for (volatile uint32_t j = 0; j < 2000000; j++);
+    }
+    /* Done — terminate self */
+    process_terminate(2);
+    while (1) { __asm__ volatile("hlt"); }
+}
+
+/* Stage 2: race condition demo — myglobal++ is LOAD -> ADD -> STORE,
+ * not atomic. Run 'race' at the shell and watch the final value land
+ * below 200000 most of the time. */
+static void race_thread_a(void)
+{
+    for (int i = 0; i < RACE_ITERS; i++) myglobal++;
+    vga_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_printf("\n  [race_a] done. myglobal = %d\n", myglobal);
+    race_done++;
+    thread_exit();
+}
+
+static void race_thread_b(void)
+{
+    for (int i = 0; i < RACE_ITERS; i++) myglobal++;
+    vga_set_color(VGA_LIGHT_MAGENTA, VGA_BLACK);
+    vga_printf("\n  [race_b] done. myglobal = %d\n", myglobal);
+    race_done++;
+    thread_exit();
+}
+
+/* Stage 2: same race, this time with the increment protected by a
+ * mutex — should land on exactly 200000 every time. */
+static void racem_thread_a(void)
+{
+    for (int i = 0; i < RACE_ITERS; i++) {
+        mutex_lock(&race_mutex);
+        myglobal++;
+        mutex_unlock(&race_mutex);
+    }
+    vga_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_printf("\n  [racem_a] done. myglobal = %d\n", myglobal);
+    race_done++;
+    thread_exit();
+}
+
+static void racem_thread_b(void)
+{
+    for (int i = 0; i < RACE_ITERS; i++) {
+        mutex_lock(&race_mutex);
+        myglobal++;
+        mutex_unlock(&race_mutex);
+    }
+    vga_set_color(VGA_LIGHT_MAGENTA, VGA_BLACK);
+    vga_printf("\n  [racem_b] done. myglobal = %d\n", myglobal);
+    race_done++;
+    thread_exit();
+}
+
 void kernel_main(void) {
     vga_init();
     kb_init();
+
+    /* Stage 1: interrupt infrastructure */
+    idt_init();
+    pic_init();
+    pit_init();
+
+    /* Register the timer ISR at vector 32 (IRQ0 after PIC remap).
+     * Without this, idt_init() leaves entry 32 "not present" and
+     * the PIT firing IRQ0 faults instead of running the scheduler. */
+    extern void irq0_handler(void);
+    idt_set_gate(32, (uint32_t)irq0_handler, 0x08, 0x8E);
+
+    /* Stage 3: physical memory manager — parses the E820 map boot.asm
+     * left at 0x8000/0x8004 and builds the frame bitmap. Must run
+     * before anything tries to allocate a frame. */
+    pmm_init();
+
+    /* Stage 4: initialise RAM-disk filesystem */
+    fs_init();
+
+    /* Stage 1: process table and scheduler */
+    process_init();
+    scheduler_init();
+
+    /* Create two demo processes */
+    process_create("task_a", task_a);
+    process_create("task_b", task_b);
+
     print_splash();
+
+    /* Enable interrupts — timer starts firing NOW */
+    __asm__ volatile("sti");
+
+    /* Kernel thread (PID 0) continues as the shell */
     shell_run();
 
     /* Should never reach here */

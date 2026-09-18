@@ -31,6 +31,10 @@ SECTIONS {
         *(.bss)           /* Uninitialised data – zeroed by convention */
     }
 
+    /* Stage 3: marks the first byte after the kernel image. pmm_init()
+     * uses this so it never hands out a frame the kernel itself occupies. */
+    _kernel_end = .;
+
     /DISCARD/ : {
         *(.eh_frame)      /* Exception frames – not needed in a bare kernel */
         *(.comment)
