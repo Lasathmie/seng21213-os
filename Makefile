@@ -61,7 +61,9 @@ KERNEL_C_SRCS  := kernel/kernel.c    \
                    kernel/process.c   \
                    kernel/scheduler.c \
                    kernel/thread.c    \
-                   kernel/mutex.c
+                   kernel/mutex.c     \
+                   kernel/pmm.c       \
+				   kernel/fs.c
 
 # Add your new source files below as the course progresses:
 # Lecture 10: kernel/thread.c  kernel/mutex.c
