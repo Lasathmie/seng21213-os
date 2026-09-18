@@ -1,4 +1,4 @@
-# SENG21213-OS — Stage 0: Kernel Foundations
+# SENG21213-OS — Multi-Stage x86 Operating System
 
 > **Course**: SENG 21213 – Computer Architecture & Operating Systems  
 > **Year**: 2nd Year, Software Engineering  
@@ -8,10 +8,10 @@
 
 ## What Is This?
 
-This is **Stage 0** of your semester-long OS assignment. Over 5 lecture milestones
-(Lectures 8–12), your team will transform this minimal kernel into a functioning
-operating system with process management, threading, memory management, and a
-file system.
+This project started from the Stage 0 kernel supplied for the semester-long OS
+assignment. The kernel was extended through Stages 0–4 to implement process
+management, scheduling, threads and synchronization, physical memory management,
+and a RAM-disk file system.
 
 ```
 seng21213-os/
@@ -19,9 +19,15 @@ seng21213-os/
 │   └── boot.asm          ← MBR Bootloader (NASM, 16-bit → 32-bit transition)
 ├── kernel/
 │   ├── kernel_entry.asm  ← Protected-mode entry, calls kernel_main()
-│   ├── kernel.c          ← Main kernel: shell loop, command dispatch
+│   ├── kernel.c          ← Main kernel: shell loop, command dispatch & stage initialization
 │   ├── vga.c / vga.h     ← VGA 80×25 text-mode driver
 │   ├── keyboard.c / .h   ← PS/2 keyboard polling driver
+│   ├── process.c / .h    ← Process table, creation and termination
+│   ├── scheduler.c / .h  ← Process scheduling
+│   ├── thread.c / .h     ← Kernel thread support
+│   ├── mutex.c / .h      ← Mutex synchronization
+│   ├── pmm.c / .h        ← Physical memory management
+│   └── fs.c / fs.h       ← RAM-disk file system
 ├── include/
 │   └── types.h           ← Primitive types (no libc!)
 ├── linker.ld             ← Linker script (kernel at 0x10000)
@@ -111,38 +117,130 @@ kernel/kernel.c  →  kernel_main()
   │  print_splash() – welcome screen
   │  shell_run()    – interactive shell (infinite loop)
   ▼
-Your code from here...
+Stage 0–4 kernel implementation
+  │
+  ├─ Stage 1: processes + scheduler
+  ├─ Stage 2: threads + mutex synchronization
+  ├─ Stage 3: physical memory manager
+  └─ Stage 4: RAM-disk file system
 ```
 
 ---
 
-## Building Lecture 9: Process Management
+## Implemented Stages
 
-When you reach Lecture 9, you'll add process support. Here's the interface to implement:
+### Stage 0 – Boot, VGA, Keyboard and Shell
 
-```c
-/* kernel/process.h  — you write this! */
+The original Stage 0 foundation was retained and used as the base of the project.
 
-#define MAX_PROCESSES    16
-#define STACK_SIZE     4096
+Implemented/retained functionality includes:
 
-typedef enum { READY, RUNNING, BLOCKED, TERMINATED } proc_state_t;
+  x86 boot process and protected-mode transition
 
-typedef struct pcb {
-    uint32_t      pid;
-    proc_state_t  state;
-    uint32_t      esp;          /* Saved stack pointer */
-    uint32_t      eip;          /* Saved instruction pointer */
-    uint32_t      stack[STACK_SIZE / 4];
-    struct pcb   *next;         /* For linked-list ready queue */
-} pcb_t;
+  VGA text-mode display
 
-void   process_init(void);
-pcb_t *process_create(void (*entry)(void));
-void   process_yield(void);        /* Trigger context switch */
-void   process_exit(void);
-void   scheduler_tick(void);       /* Called by timer IRQ (Lecture 10) */
-```
+  PS/2 keyboard input
+
+  Kernel splash/about/help functionality
+
+  Shell commands including clear and echo
+
+  Interactive shell loop
+
+  The original memory command remains a stub
+
+### Stage 1 – Process Management and Scheduling
+
+Stage 1 was added to the kernel and integrated into kernel_main().
+
+Implemented functionality includes:
+
+  Process table with a maximum of 16 process slots
+
+  Process states and PCB management
+
+  PID 0 kernel process initialization
+
+  Process creation with per-process 4 KiB stacks
+
+  Initial process context/frame construction
+
+  Process termination for non-kernel processes
+
+  Scheduler initialization
+
+  Demo processes task_a and task_b
+
+  ps shell command for displaying process information
+
+  kill shell command for terminating a process
+
+  Low-level context-switch support using PUSHAD/POPAD in the assembly context-switch path
+
+### Stage 2 – Threads and Synchronisation
+
+Stage 2 functionality was added through kernel threads and synchronization primitives.
+
+Implemented functionality includes:
+
+  Kernel thread support
+
+  Mutex synchronization
+
+  Race-condition demonstration code
+
+  Mutex-based protection for the race demonstration
+
+  Thread-related kernel initialization and integration
+
+### Stage 3 – Physical Memory Management
+
+Stage 3 added a physical memory manager to the kernel.
+
+Implemented functionality includes:
+
+  Physical memory manager (pmm.c)
+
+  Physical memory allocation/free management
+
+  Integration of the memory manager into the kernel build and initialization
+
+### Stage 4 – RAM-Disk File System
+
+Stage 4 added a RAM-disk file system and shell commands for basic file operations.
+
+Implemented functionality includes:
+
+  RAM-disk file system initialization through fs_init()
+
+  Volatile RAM-based storage
+
+  Superblock and bitmap-based file-system structures
+
+  Inode table and flat root directory
+
+  File descriptor management
+
+  File creation, reading, writing and deletion operations
+
+  Shell commands:
+
+    ls
+
+    touch
+
+    cat
+
+    write
+
+    rm
+
+  Integration of the file system into kernel_main()
+
+The final kernel therefore combines the original Stage 0 foundation with the
+implemented Stage 1 process management, Stage 2 threading/synchronisation,
+Stage 3 physical memory management, and Stage 4 RAM-disk file system.
+
 
 ---
 
