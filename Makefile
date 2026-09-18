@@ -44,15 +44,26 @@ endif
 BOOT_SRC  := boot/boot.asm
 BOOT_BIN  := boot/boot.bin
 
-KERNEL_ASM_SRC := kernel/kernel_entry.asm
-KERNEL_ASM_OBJ := build/kernel_entry.o
+KERNEL_ASM_SRCS := kernel/kernel_entry.asm \
+                    kernel/isr_stub.asm      \
+                    kernel/switch.asm
 
-KERNEL_C_SRCS  := kernel/kernel.c \
-                   kernel/vga.c    \
-                   kernel/keyboard.c
+KERNEL_ASM_OBJS := build/kernel_entry.o \
+                    build/isr_stub.o      \
+                    build/switch.o
+
+KERNEL_C_SRCS  := kernel/kernel.c    \
+                   kernel/vga.c       \
+                   kernel/keyboard.c  \
+                   kernel/idt.c       \
+                   kernel/pic.c       \
+                   kernel/pit.c       \
+                   kernel/process.c   \
+                   kernel/scheduler.c \
+                   kernel/thread.c    \
+                   kernel/mutex.c
 
 # Add your new source files below as the course progresses:
-# Lecture 09: kernel/process.c kernel/scheduler.c
 # Lecture 10: kernel/thread.c  kernel/mutex.c
 # Lecture 11: kernel/pmm.c     kernel/vmm.c
 # Lecture 12: kernel/fs.c
@@ -84,7 +95,17 @@ $(BOOT_BIN): $(BOOT_SRC)
 # ---------------------------------------------------------------------------
 # Kernel: Assembly object
 # ---------------------------------------------------------------------------
-$(KERNEL_ASM_OBJ): $(KERNEL_ASM_SRC)
+build/kernel_entry.o: kernel/kernel_entry.asm
+	@mkdir -p build
+	@echo "  [AS]  $<"
+	$(AS) $(ASFLAGS) $< -o $@
+
+build/isr_stub.o: kernel/isr_stub.asm
+	@mkdir -p build
+	@echo "  [AS]  $<"
+	$(AS) $(ASFLAGS) $< -o $@
+
+build/switch.o: kernel/switch.asm
 	@mkdir -p build
 	@echo "  [AS]  $<"
 	$(AS) $(ASFLAGS) $< -o $@
@@ -100,7 +121,7 @@ build/%.o: kernel/%.c
 # ---------------------------------------------------------------------------
 # Link kernel ELF, then extract flat binary
 # ---------------------------------------------------------------------------
-$(KERNEL_ELF): $(KERNEL_ASM_OBJ) $(KERNEL_C_OBJS)
+$(KERNEL_ELF): $(KERNEL_ASM_OBJS) $(KERNEL_C_OBJS)
 	@echo "  [LD]  $@"
 	$(LD) $(LDFLAGS) -T linker.ld $^ -o $@
 
